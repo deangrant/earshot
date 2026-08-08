@@ -28,7 +28,8 @@ pub trait Transcriber {
     ///
     /// # Errors
     ///
-    /// Returns an error when decoding or transcription fails.
+    /// Returns an error when decoding or transcription fails, including
+    /// [`Error::AudioTooLong`] when decoded audio exceeds the decoder limit.
     fn transcribe_file(
         &self,
         path: impl AsRef<Path>,
@@ -41,7 +42,9 @@ impl WhisperModel {
     ///
     /// # Errors
     ///
-    /// Returns an error when decoding or transcription fails.
+    /// Returns an error when decoding or transcription fails, including
+    /// [`Error::AudioTooLong`] when decoded audio exceeds the default
+    /// maximum duration ([`crate::MAX_AUDIO_DURATION_SECS`]).
     pub fn transcribe_file(
         &self,
         path: impl AsRef<Path>,
@@ -110,7 +113,7 @@ impl Transcriber for WhisperModel {
         path: impl AsRef<Path>,
         config: TranscribeConfig,
     ) -> Result<TranscriptionResult> {
-        let samples = SymphoniaDecoder.decode_file(path.as_ref())?;
+        let samples = SymphoniaDecoder::default().decode_file(path.as_ref())?;
         self.transcribe_samples(&samples, config)
     }
 }

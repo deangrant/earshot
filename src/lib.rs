@@ -37,7 +37,7 @@ pub mod model;
 pub mod types;
 
 #[doc(inline)]
-pub use audio::{AudioDecoder, SymphoniaDecoder, WHISPER_SAMPLE_RATE};
+pub use audio::{AudioDecoder, SymphoniaDecoder, MAX_AUDIO_DURATION_SECS, WHISPER_SAMPLE_RATE};
 #[doc(inline)]
 pub use config::{ComputeType, Device, ModelConfig, TranscribeConfig};
 #[doc(inline)]

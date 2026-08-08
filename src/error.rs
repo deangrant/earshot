@@ -18,6 +18,13 @@ pub enum Error {
     #[error("failed to decode audio: {0}")]
     AudioDecode(String),
 
+    /// The decoded audio exceeds the configured maximum duration.
+    #[error("audio longer than {max_secs} seconds is not supported")]
+    AudioTooLong {
+        /// Maximum allowed duration in seconds.
+        max_secs: u64,
+    },
+
     /// No decodable audio track was found in the file.
     #[error("no audio track found in `{path}`")]
     NoAudioTrack {

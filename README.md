@@ -11,6 +11,7 @@ Audio is decoded with [Symphonia](https://crates.io/crates/symphonia)—no separ
 - Automatic language detection (or force a language code)
 - CPU by default; enable the `cuda` feature for NVIDIA GPUs
 - Int8 / quantized GGML models for lower memory use (`ComputeType::Int8`)
+- Default 2-hour decode cap (`MAX_AUDIO_DURATION_SECS`) to bound memory; override via `SymphoniaDecoder::max_duration_secs`
 
 ## Install
 

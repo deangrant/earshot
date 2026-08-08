@@ -14,12 +14,23 @@ use symphonia::core::io::MediaSourceStream;
 use symphonia::core::meta::MetadataOptions;
 use symphonia::core::probe::Hint;
 
-use crate::audio::decoder::{AudioDecoder, WHISPER_SAMPLE_RATE};
+use crate::audio::decoder::{AudioDecoder, MAX_AUDIO_DURATION_SECS, WHISPER_SAMPLE_RATE};
 use crate::error::{Error, Result};
 
 /// Decodes common audio formats via Symphonia and resamples to 16 kHz mono.
-#[derive(Debug, Default, Clone, Copy)]
-pub struct SymphoniaDecoder;
+#[derive(Debug, Clone, Copy)]
+pub struct SymphoniaDecoder {
+    /// Maximum decoded duration in seconds before failing.
+    pub max_duration_secs: u64,
+}
+
+impl Default for SymphoniaDecoder {
+    fn default() -> Self {
+        Self {
+            max_duration_secs: MAX_AUDIO_DURATION_SECS,
+        }
+    }
+}
 
 impl AudioDecoder for SymphoniaDecoder {
     fn decode_file(&self, path: &Path) -> Result<Vec<f32>> {
@@ -94,6 +105,12 @@ impl AudioDecoder for SymphoniaDecoder {
             match decoder.decode(&packet) {
                 Ok(decoded) => {
                     append_decoded(&decoded, &mut sample_buf, &mut interleaved);
+                    let frames = interleaved.len() / channels;
+                    if duration_exceeded(frames, sample_rate, self.max_duration_secs) {
+                        return Err(Error::AudioTooLong {
+                            max_secs: self.max_duration_secs,
+                        });
+                    }
                 }
                 Err(e) => return Err(Error::AudioDecode(e.to_string())),
             }
@@ -106,6 +123,15 @@ impl AudioDecoder for SymphoniaDecoder {
         let mono = to_mono(&interleaved, channels);
         resample_mono(mono, sample_rate, WHISPER_SAMPLE_RATE)
     }
+}
+
+/// Returns true when decoded `frames` exceed `max_secs` at `sample_rate`.
+fn duration_exceeded(frames: usize, sample_rate: u32, max_secs: u64) -> bool {
+    if sample_rate == 0 {
+        return true;
+    }
+    let max_frames = max_secs.saturating_mul(u64::from(sample_rate));
+    frames as u64 > max_frames
 }
 
 fn append_decoded(
@@ -256,6 +282,14 @@ mod tests {
     }
 
     #[test]
+    fn duration_exceeded_respects_limit() {
+        assert!(!duration_exceeded(15_999, 16_000, 1));
+        assert!(!duration_exceeded(16_000, 16_000, 1));
+        assert!(duration_exceeded(16_001, 16_000, 1));
+        assert!(duration_exceeded(1, 16_000, 0));
+    }
+
+    #[test]
     fn decode_file_rejects_invalid_audio() {
         use std::io::Write;
 
@@ -265,12 +299,52 @@ mod tests {
             file.write_all(b"not a real audio bitstream").unwrap();
         }
 
-        let result = SymphoniaDecoder.decode_file(&path);
+        let result = SymphoniaDecoder::default().decode_file(&path);
         let _ = std::fs::remove_file(&path);
 
         assert!(matches!(
             result,
             Err(Error::AudioDecode(_)) | Err(Error::NoAudioTrack { .. })
         ));
+    }
+
+    #[test]
+    fn decode_file_rejects_audio_over_max_duration() {
+        let path = std::env::temp_dir().join("earshot-duration-cap.wav");
+        write_minimal_wav(&path, 16_000, &[0_i16; 100]);
+
+        let decoder = SymphoniaDecoder {
+            max_duration_secs: 0,
+        };
+        let result = decoder.decode_file(&path);
+        let _ = std::fs::remove_file(&path);
+
+        assert!(matches!(result, Err(Error::AudioTooLong { max_secs: 0 })));
+    }
+
+    fn write_minimal_wav(path: &Path, sample_rate: u32, samples: &[i16]) {
+        use std::io::Write;
+
+        let data_bytes = samples.len() * 2;
+        let mut bytes = Vec::with_capacity(44 + data_bytes);
+        bytes.extend_from_slice(b"RIFF");
+        bytes.extend_from_slice(&(36 + data_bytes as u32).to_le_bytes());
+        bytes.extend_from_slice(b"WAVE");
+        bytes.extend_from_slice(b"fmt ");
+        bytes.extend_from_slice(&16u32.to_le_bytes()); // PCM chunk size
+        bytes.extend_from_slice(&1u16.to_le_bytes()); // PCM format
+        bytes.extend_from_slice(&1u16.to_le_bytes()); // mono
+        bytes.extend_from_slice(&sample_rate.to_le_bytes());
+        bytes.extend_from_slice(&(sample_rate * 2).to_le_bytes()); // byte rate
+        bytes.extend_from_slice(&2u16.to_le_bytes()); // block align
+        bytes.extend_from_slice(&16u16.to_le_bytes()); // bits per sample
+        bytes.extend_from_slice(b"data");
+        bytes.extend_from_slice(&(data_bytes as u32).to_le_bytes());
+        for sample in samples {
+            bytes.extend_from_slice(&sample.to_le_bytes());
+        }
+
+        let mut file = File::create(path).unwrap();
+        file.write_all(&bytes).unwrap();
     }
 }
