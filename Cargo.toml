@@ -1,0 +1,26 @@
+[package]
+name = "earshot"
+version = "0.1.0"
+edition = "2021"
+description = "Fast Whisper speech-to-text with timed segments and language detection"
+license = "MIT"
+readme = "README.md"
+keywords = ["whisper", "speech-to-text", "transcription", "audio", "stt"]
+categories = ["multimedia::audio", "api-bindings"]
+
+[features]
+default = []
+cuda = ["whisper-rs/cuda"]
+
+[dependencies]
+rubato = "0.16"
+symphonia = { version = "0.5", features = ["mp3", "wav", "aac", "flac"] }
+thiserror = "2"
+whisper-rs = "0.16"
+
+[dev-dependencies]
+anyhow = "1"
+
+[[example]]
+name = "transcribe"
+path = "examples/transcribe.rs"
