@@ -144,6 +144,9 @@ fn resample_mono(samples: Vec<f32>, from_rate: u32, to_rate: u32) -> Result<Vec<
         return Ok(samples);
     }
 
+    let expected_len =
+        (samples.len() as f64 * f64::from(to_rate) / f64::from(from_rate)).round() as usize;
+
     let params = SincInterpolationParameters {
         sinc_len: 256,
         f_cutoff: 0.95,
@@ -161,12 +164,32 @@ fn resample_mono(samples: Vec<f32>, from_rate: u32, to_rate: u32) -> Result<Vec<
     )
     .map_err(|e| Error::AudioDecode(format!("resampler init failed: {e}")))?;
 
+    let delay = resampler.output_delay();
     let waves_in = vec![samples];
-    let waves_out = resampler
+    let mut waves_out = resampler
         .process(&waves_in, None)
         .map_err(|e| Error::AudioDecode(format!("resample failed: {e}")))?;
 
-    Ok(waves_out.into_iter().next().unwrap_or_default())
+    let mut out = waves_out.pop().unwrap_or_default();
+    let target = expected_len.saturating_add(delay);
+    while out.len() < target {
+        let before = out.len();
+        let flushed = resampler
+            .process_partial::<Vec<f32>>(None, None)
+            .map_err(|e| Error::AudioDecode(format!("resample flush failed: {e}")))?;
+        let chunk = flushed.into_iter().next().unwrap_or_default();
+        if chunk.is_empty() {
+            break;
+        }
+        out.extend_from_slice(&chunk);
+        if out.len() == before {
+            break;
+        }
+    }
+
+    let start = delay.min(out.len());
+    let end = (start + expected_len).min(out.len());
+    Ok(out[start..end].to_vec())
 }
 
 #[cfg(test)]
@@ -187,6 +210,24 @@ mod tests {
         let samples = vec![0.1, 0.2, 0.3];
         let out = resample_mono(samples.clone(), 16_000, 16_000).unwrap();
         assert_eq!(out, samples);
+    }
+
+    #[test]
+    fn resample_44100_to_16000_preserves_expected_length() {
+        let from_rate = 44_100u32;
+        let to_rate = 16_000u32;
+        let samples = vec![0.1_f32; from_rate as usize]; // one second
+        let expected =
+            (samples.len() as f64 * f64::from(to_rate) / f64::from(from_rate)).round() as usize;
+
+        let out = resample_mono(samples, from_rate, to_rate).unwrap();
+        assert!(
+            out.len().abs_diff(expected) <= 1,
+            "got {} samples, expected about {}",
+            out.len(),
+            expected
+        );
+        assert_eq!(out.len(), to_rate as usize);
     }
 
     #[test]
