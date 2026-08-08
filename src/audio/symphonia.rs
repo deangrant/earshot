@@ -112,9 +112,14 @@ fn append_decoded(
     out: &mut Vec<f32>,
 ) {
     let spec = *decoded.spec();
-    let duration = decoded.capacity() as u64;
-    if sample_buf.is_none() {
-        *sample_buf = Some(SampleBuffer::<f32>::new(duration, spec));
+    let frames = decoded.capacity() as u64;
+    let needed = decoded.capacity() * spec.channels.count();
+    let needs_new = sample_buf
+        .as_ref()
+        .map(|buf| buf.capacity() < needed)
+        .unwrap_or(true);
+    if needs_new {
+        *sample_buf = Some(SampleBuffer::<f32>::new(frames, spec));
     }
     if let Some(buf) = sample_buf.as_mut() {
         buf.copy_interleaved_ref(decoded.clone());
@@ -166,6 +171,8 @@ fn resample_mono(samples: Vec<f32>, from_rate: u32, to_rate: u32) -> Result<Vec<
 mod tests {
     use super::*;
 
+    use symphonia::core::audio::{AsAudioBufferRef, AudioBuffer, Layout, Signal, SignalSpec};
+
     #[test]
     fn mono_averages_channels() {
         let stereo = vec![1.0, 3.0, 2.0, 4.0];
@@ -178,5 +185,30 @@ mod tests {
         let samples = vec![0.1, 0.2, 0.3];
         let out = resample_mono(samples.clone(), 16_000, 16_000).unwrap();
         assert_eq!(out, samples);
+    }
+
+    #[test]
+    fn append_decoded_grows_sample_buffer_for_larger_packets() {
+        let small = filled_mono_buffer(8, 0.25);
+        let large = filled_mono_buffer(64, 0.5);
+        let mut sample_buf = None;
+        let mut out = Vec::new();
+
+        append_decoded(&small.as_audio_buffer_ref(), &mut sample_buf, &mut out);
+        assert_eq!(out.len(), 8);
+
+        append_decoded(&large.as_audio_buffer_ref(), &mut sample_buf, &mut out);
+        assert_eq!(out.len(), 8 + 64);
+        assert!(sample_buf.unwrap().capacity() >= 64);
+    }
+
+    fn filled_mono_buffer(frames: u64, value: f32) -> AudioBuffer<f32> {
+        let spec = SignalSpec::new_with_layout(16_000, Layout::Mono);
+        let mut buf = AudioBuffer::<f32>::new(frames, spec);
+        buf.render_reserved(Some(frames as usize));
+        for sample in buf.chan_mut(0) {
+            *sample = value;
+        }
+        buf
     }
 }
