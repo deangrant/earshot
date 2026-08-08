@@ -6,7 +6,7 @@ Audio is decoded with [Symphonia](https://crates.io/crates/symphonia)—no separ
 
 ## Features
 
-- Transcribe MP3, WAV, FLAC, AAC, and other Symphonia-supported formats
+- Transcribe MP3, WAV, FLAC, and AAC (MP4/M4A)
 - Timed segments (`start` / `end` in seconds) plus full transcript text
 - Automatic language detection (or force a language code)
 - CPU by default; enable the `cuda` feature for NVIDIA GPUs

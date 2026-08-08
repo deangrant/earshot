@@ -1,4 +1,4 @@
-//! Symphonia-backed audio decoding without an external FFmpeg install.
+//! Symphonia-backed decoding for MP3, WAV, FLAC, and AAC (MP4/M4A).
 
 use std::fs::File;
 use std::path::Path;
@@ -17,7 +17,7 @@ use symphonia::core::probe::Hint;
 use crate::audio::decoder::{AudioDecoder, MAX_AUDIO_DURATION_SECS, WHISPER_SAMPLE_RATE};
 use crate::error::{Error, Result};
 
-/// Decodes common audio formats via Symphonia and resamples to 16 kHz mono.
+/// Decodes MP3, WAV, FLAC, and AAC (MP4/M4A) to 16 kHz mono PCM.
 #[derive(Debug, Clone, Copy)]
 pub struct SymphoniaDecoder {
     /// Maximum decoded duration in seconds before failing.
