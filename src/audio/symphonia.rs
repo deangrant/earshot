@@ -68,11 +68,12 @@ impl AudioDecoder for SymphoniaDecoder {
             .codec_params
             .sample_rate
             .ok_or_else(|| Error::AudioDecode("missing sample rate".into()))?;
-        let mut channels = track
+        let metadata_channels = track
             .codec_params
             .channels
             .map(|c| c.count())
             .filter(|&n| n > 0);
+        let mut channels = metadata_channels;
 
         let mut decoder = symphonia::default::get_codecs()
             .make(&track.codec_params, &DecoderOptions::default())
@@ -89,10 +90,10 @@ impl AudioDecoder for SymphoniaDecoder {
                 {
                     break;
                 }
+                // Format-level reset requires re-examining tracks and recreating
+                // decoders; that path is unsupported here.
                 Err(SymphoniaError::ResetRequired) => {
-                    return Err(Error::AudioDecode(
-                        "bitstream reset is not supported".into(),
-                    ));
+                    return Err(Error::UnsupportedBitstreamReset);
                 }
                 Err(e) => return Err(Error::AudioDecode(e.to_string())),
             };
@@ -113,6 +114,12 @@ impl AudioDecoder for SymphoniaDecoder {
                             max_secs: self.max_duration_secs,
                         });
                     }
+                }
+                // Decoder-level reset: clear local PCM state and continue.
+                Err(SymphoniaError::ResetRequired) => {
+                    decoder.reset();
+                    sample_buf = None;
+                    channels = metadata_channels;
                 }
                 Err(e) => return Err(Error::AudioDecode(e.to_string())),
             }
@@ -274,6 +281,13 @@ mod tests {
         let err = resolve_channels(None, 0).unwrap_err();
         assert!(matches!(err, Error::AudioDecode(_)));
         assert!(err.to_string().contains("missing channel count"));
+    }
+
+    #[test]
+    fn unsupported_bitstream_reset_is_typed_error() {
+        let err = Error::UnsupportedBitstreamReset;
+        assert_eq!(err.to_string(), "bitstream reset is not supported");
+        assert!(matches!(err, Error::UnsupportedBitstreamReset));
     }
 
     #[test]

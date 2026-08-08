@@ -17,7 +17,9 @@ pub trait AudioDecoder {
     /// # Errors
     ///
     /// Returns an error when the file cannot be opened, contains no audio
-    /// track, fails to decode, or exceeds the decoder's maximum duration
-    /// ([`Error::AudioTooLong`](crate::Error::AudioTooLong)).
+    /// track, fails to decode, exceeds the decoder's maximum duration
+    /// ([`Error::AudioTooLong`](crate::Error::AudioTooLong)), or requires an
+    /// unsupported format-level bitstream reset
+    /// ([`Error::UnsupportedBitstreamReset`](crate::Error::UnsupportedBitstreamReset)).
     fn decode_file(&self, path: &Path) -> Result<Vec<f32>>;
 }

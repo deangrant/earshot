@@ -20,6 +20,14 @@ pub enum Error {
     #[error("failed to decode audio: {0}")]
     AudioDecode(String),
 
+    /// The demuxer requested a bitstream reset that this decoder does not support.
+    ///
+    /// Symphonia can emit `ResetRequired` after seeks or discontinuities. Earshot
+    /// recovers from decoder-level resets, but format-level resets (re-probe track
+    /// list / recreate demuxer state) are rejected as hard errors.
+    #[error("bitstream reset is not supported")]
+    UnsupportedBitstreamReset,
+
     /// The decoded audio exceeds the configured maximum duration.
     #[error("audio longer than {max_secs} seconds is not supported")]
     AudioTooLong {
