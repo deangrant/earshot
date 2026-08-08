@@ -178,9 +178,9 @@ fn collect_segments(state: &whisper_rs::WhisperState) -> Result<Vec<Segment>> {
 
     let mut segments = Vec::with_capacity(n as usize);
     for i in 0..n {
-        let Some(seg) = state.get_segment(i) else {
-            continue;
-        };
+        let seg = state
+            .get_segment(i)
+            .ok_or_else(|| Error::Transcription(format!("missing segment at index {i}")))?;
         let text = seg
             .to_str()
             .map_err(|e| Error::Transcription(e.to_string()))?
