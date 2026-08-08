@@ -32,7 +32,8 @@ impl WhisperModel {
     /// # Errors
     ///
     /// Returns [`Error::CudaUnavailable`] when [`Device::Cuda`] is requested
-    /// without the `cuda` feature. Returns [`Error::ModelLoad`] when the
+    /// without the `cuda` feature. Returns [`Error::InvalidConfig`] when the
+    /// CUDA `device_id` is negative. Returns [`Error::ModelLoad`] when the
     /// backend fails to open the model or rejects the path (including
     /// non-UTF-8 paths on platforms where the backend requires UTF-8).
     /// Returns [`Error::ComputeTypeMismatch`] when the loaded weights do not
@@ -89,6 +90,11 @@ fn context_params(config: &ModelConfig) -> Result<WhisperContextParameters<'stat
             params.flash_attn = false;
         }
         Device::Cuda { device_id } => {
+            if device_id < 0 {
+                return Err(Error::InvalidConfig(format!(
+                    "CUDA device_id must be >= 0, got {device_id}"
+                )));
+            }
             if !cfg!(feature = "cuda") {
                 return Err(Error::CudaUnavailable);
             }
@@ -133,6 +139,14 @@ mod tests {
         } else {
             assert!(matches!(result, Err(Error::CudaUnavailable)));
         }
+    }
+
+    #[test]
+    fn cuda_negative_device_id_is_invalid_config() {
+        let cfg = ModelConfig::default().device(Device::Cuda { device_id: -1 });
+        let err = context_params(&cfg).unwrap_err();
+        assert!(matches!(err, Error::InvalidConfig(_)));
+        assert!(err.to_string().contains("device_id"));
     }
 
     #[test]

@@ -8,9 +8,10 @@ pub enum Device {
     Cpu,
     /// Run on an NVIDIA GPU via CUDA.
     ///
-    /// Requires building with the `cuda` feature.
+    /// Requires building with the `cuda` feature. `device_id` must be `>= 0`
+    /// (validated when the model is loaded).
     Cuda {
-        /// Zero-based CUDA device index.
+        /// Zero-based CUDA device index (`>= 0`).
         device_id: i32,
     },
 }
@@ -72,6 +73,8 @@ pub struct TranscribeConfig {
     /// Forced language code, or `None` to auto-detect then transcribe.
     pub language: Option<String>,
     /// Number of threads used for CPU inference.
+    ///
+    /// Must be `>= 1` (validated when transcription starts).
     pub n_threads: i32,
 }
 
@@ -97,7 +100,7 @@ impl TranscribeConfig {
         self
     }
 
-    /// Sets the CPU thread count used during inference.
+    /// Sets the CPU thread count used during inference (`>= 1`).
     pub fn n_threads(mut self, n_threads: i32) -> Self {
         self.n_threads = n_threads;
         self
