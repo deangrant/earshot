@@ -18,7 +18,8 @@ impl WhisperModel {
     /// Loads a GGML Whisper model from `path` using `config`.
     ///
     /// Prefer a quantized GGML file (for example `*-q8_0.bin`) when
-    /// [`ComputeType::Int8`] is selected.
+    /// [`ComputeType::Int8`] is selected. After open, the model's
+    /// `model_ftype` is checked against [`ModelConfig::compute_type`].
     ///
     /// # Security
     ///
@@ -32,7 +33,9 @@ impl WhisperModel {
     ///
     /// Returns [`Error::CudaUnavailable`] when [`Device::Cuda`] is requested
     /// without the `cuda` feature. Returns [`Error::ModelLoad`] when the
-    /// backend fails to open the model.
+    /// backend fails to open the model. Returns
+    /// [`Error::ComputeTypeMismatch`] when the loaded weights do not match
+    /// [`ModelConfig::compute_type`].
     pub fn load(path: impl AsRef<Path>, config: ModelConfig) -> Result<Self> {
         let path = path.as_ref().to_path_buf();
         let params = context_params(&config)?;
@@ -41,6 +44,14 @@ impl WhisperModel {
                 path: path.clone(),
                 message: e.to_string(),
             })?;
+
+        let actual_ftype = ctx.model_ftype();
+        if !compute_type_matches(config.compute_type, actual_ftype) {
+            return Err(Error::ComputeTypeMismatch {
+                expected: config.compute_type,
+                actual_ftype,
+            });
+        }
 
         Ok(Self { ctx, path, config })
     }
@@ -75,6 +86,7 @@ fn context_params(config: &ModelConfig) -> Result<WhisperContextParameters<'stat
         Device::Cpu => {
             params.use_gpu = false;
             params.gpu_device = 0;
+            params.flash_attn = false;
         }
         Device::Cuda { device_id } => {
             if !cfg!(feature = "cuda") {
@@ -82,14 +94,20 @@ fn context_params(config: &ModelConfig) -> Result<WhisperContextParameters<'stat
             }
             params.use_gpu = true;
             params.gpu_device = device_id;
+            params.flash_attn = true;
         }
     }
 
-    // Float16 benefits from flash attention when available on GPU builds.
-    params.flash_attn = matches!(config.compute_type, ComputeType::Float16)
-        && matches!(config.device, Device::Cuda { .. });
-
     Ok(params)
+}
+
+/// Returns whether `ftype` from whisper.cpp matches `compute`.
+fn compute_type_matches(compute: ComputeType, ftype: i32) -> bool {
+    match compute {
+        ComputeType::Float32 => ftype == 0,
+        ComputeType::Float16 => ftype == 1,
+        ComputeType::Int8 => ftype >= 2,
+    }
 }
 
 #[cfg(test)]
@@ -101,6 +119,7 @@ mod tests {
         let cfg = ModelConfig::default().device(Device::Cpu);
         let params = context_params(&cfg).unwrap();
         assert!(!params.use_gpu);
+        assert!(!params.flash_attn);
     }
 
     #[test]
@@ -108,9 +127,46 @@ mod tests {
         let cfg = ModelConfig::default().device(Device::Cuda { device_id: 0 });
         let result = context_params(&cfg);
         if cfg!(feature = "cuda") {
-            assert!(result.is_ok());
+            let params = result.unwrap();
+            assert!(params.use_gpu);
+            assert!(params.flash_attn);
         } else {
             assert!(matches!(result, Err(Error::CudaUnavailable)));
         }
+    }
+
+    #[test]
+    fn cuda_enables_flash_attn_for_any_compute_type() {
+        if !cfg!(feature = "cuda") {
+            return;
+        }
+        for compute in [
+            ComputeType::Float32,
+            ComputeType::Float16,
+            ComputeType::Int8,
+        ] {
+            let cfg = ModelConfig::default()
+                .device(Device::Cuda { device_id: 0 })
+                .compute_type(compute);
+            let params = context_params(&cfg).unwrap();
+            assert!(params.flash_attn, "compute={compute:?}");
+        }
+    }
+
+    #[test]
+    fn compute_type_matches_ftype_buckets() {
+        assert!(compute_type_matches(ComputeType::Float32, 0));
+        assert!(!compute_type_matches(ComputeType::Float32, 1));
+        assert!(!compute_type_matches(ComputeType::Float32, 7));
+
+        assert!(compute_type_matches(ComputeType::Float16, 1));
+        assert!(!compute_type_matches(ComputeType::Float16, 0));
+        assert!(!compute_type_matches(ComputeType::Float16, 7));
+
+        assert!(compute_type_matches(ComputeType::Int8, 2));
+        assert!(compute_type_matches(ComputeType::Int8, 7));
+        assert!(!compute_type_matches(ComputeType::Int8, 0));
+        assert!(!compute_type_matches(ComputeType::Int8, 1));
+        assert!(!compute_type_matches(ComputeType::Int8, -1));
     }
 }

@@ -15,17 +15,21 @@ pub enum Device {
     },
 }
 
-/// Expected numeric precision of the loaded GGML model weights.
+/// Expected GGML weight format validated when the model is loaded.
 ///
-/// Whisper.cpp stores quantization in the model file. Choose a matching GGML
-/// file (for example a `q8_0` model for [`ComputeType::Int8`]).
+/// Whisper.cpp stores precision/quantization in the model file. Earshot checks
+/// the loaded `model_ftype` against this value. Choose a matching GGML file
+/// (for example a `q8_0` model for [`ComputeType::Int8`]).
+///
+/// [`ComputeType::Int8`] means a quantized GGML weight file (Q4/Q5/Q8/etc.),
+/// not a runtime cast of an F16/F32 model.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ComputeType {
-    /// Full 32-bit floating point weights.
+    /// Full 32-bit floating point weights (`model_ftype` 0).
     Float32,
-    /// 16-bit floating point weights.
+    /// 16-bit floating point weights (`model_ftype` 1).
     Float16,
-    /// 8-bit quantized weights (best memory efficiency).
+    /// Quantized GGML weights such as Q4/Q5/Q8 (`model_ftype` >= 2).
     #[default]
     Int8,
 }

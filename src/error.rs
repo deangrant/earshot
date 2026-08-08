@@ -2,6 +2,8 @@
 
 use std::path::PathBuf;
 
+use crate::config::ComputeType;
+
 /// Errors that can occur while loading models or transcribing audio.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -39,6 +41,15 @@ pub enum Error {
         path: PathBuf,
         /// Backend error message.
         message: String,
+    },
+
+    /// The loaded model weights do not match [`ModelConfig::compute_type`](crate::ModelConfig).
+    #[error("model compute type mismatch: config={expected:?}, model_ftype={actual_ftype}")]
+    ComputeTypeMismatch {
+        /// Compute type requested in configuration.
+        expected: ComputeType,
+        /// GGML `model_ftype` reported by the loaded model.
+        actual_ftype: i32,
     },
 
     /// Transcription failed inside the Whisper backend.

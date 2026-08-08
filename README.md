@@ -46,7 +46,15 @@ Building with `cuda` requires a working CUDA toolkit on the machine that compile
 
 ## Models
 
-Download a GGML Whisper model (prefer a quantized file such as `q8_0` for `ComputeType::Int8`), for example from the [whisper.cpp model collection](https://huggingface.co/ggerganov/whisper.cpp).
+Download a GGML Whisper model that matches your `ComputeType`, for example from the
+[whisper.cpp model collection](https://huggingface.co/ggerganov/whisper.cpp):
+
+- `ComputeType::Int8` — quantized weights such as `q8_0` / `q5_0` / `q4_0`
+- `ComputeType::Float16` — F16 models
+- `ComputeType::Float32` — F32 models
+
+`WhisperModel::load` validates the file's GGML `model_ftype` against your config
+and returns an error on mismatch.
 
 Place the `.bin` file somewhere on disk and pass its path to `WhisperModel::load`.
 
