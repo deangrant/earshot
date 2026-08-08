@@ -49,6 +49,10 @@ Download a GGML Whisper model (prefer a quantized file such as `q8_0` for `Compu
 
 Place the `.bin` file somewhere on disk and pass its path to `WhisperModel::load`.
 
+### Security
+
+GGML model files are loaded by native whisper.cpp code and are a **trust boundary**. Only use models from origins you trust. Do not load arbitrary remote or user-supplied `.bin` files without your own validation and trust policy—corrupt or adversarial files may crash the process or worse.
+
 ## Example
 
 ```bash

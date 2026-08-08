@@ -4,6 +4,9 @@
 //! pure-Rust pipeline (no FFmpeg install), and returns timed transcript
 //! segments plus the detected spoken language.
 //!
+//! Model files are a native-code trust boundary: only load GGML weights from
+//! sources you trust. See [`WhisperModel::load`] for details.
+//!
 //! # Examples
 //!
 //! ```no_run

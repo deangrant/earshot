@@ -20,6 +20,14 @@ impl WhisperModel {
     /// Prefer a quantized GGML file (for example `*-q8_0.bin`) when
     /// [`ComputeType::Int8`] is selected.
     ///
+    /// # Security
+    ///
+    /// Model files are loaded and parsed by native whisper.cpp code. Treat
+    /// `path` as a trust boundary: only load models from sources you trust
+    /// (for example known publishers), not arbitrary user uploads. Corrupt or
+    /// adversarial files may crash the process or worse; this is not a
+    /// sandboxed loader.
+    ///
     /// # Errors
     ///
     /// Returns [`Error::CudaUnavailable`] when [`Device::Cuda`] is requested
