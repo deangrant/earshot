@@ -95,10 +95,12 @@ impl AudioDecoder for SymphoniaDecoder {
                 Ok(decoded) => {
                     append_decoded(&decoded, &mut sample_buf, &mut interleaved);
                 }
-                Err(SymphoniaError::DecodeError(_)) => continue,
-                Err(SymphoniaError::IoError(_)) => continue,
                 Err(e) => return Err(Error::AudioDecode(e.to_string())),
             }
+        }
+
+        if interleaved.is_empty() {
+            return Err(Error::AudioDecode("no audio samples decoded".into()));
         }
 
         let mono = to_mono(&interleaved, channels);
@@ -210,5 +212,24 @@ mod tests {
             *sample = value;
         }
         buf
+    }
+
+    #[test]
+    fn decode_file_rejects_invalid_audio() {
+        use std::io::Write;
+
+        let path = std::env::temp_dir().join("earshot-invalid-audio.bin");
+        {
+            let mut file = File::create(&path).unwrap();
+            file.write_all(b"not a real audio bitstream").unwrap();
+        }
+
+        let result = SymphoniaDecoder.decode_file(&path);
+        let _ = std::fs::remove_file(&path);
+
+        assert!(matches!(
+            result,
+            Err(Error::AudioDecode(_)) | Err(Error::NoAudioTrack { .. })
+        ));
     }
 }
