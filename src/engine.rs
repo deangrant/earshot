@@ -16,8 +16,9 @@ pub trait Transcriber {
     ///
     /// # Errors
     ///
-    /// Returns an error when the Whisper backend fails or language metadata
-    /// cannot be read.
+    /// Returns an error when the Whisper backend fails, language metadata
+    /// cannot be read, or [`TranscribeConfig::language`] contains a null byte
+    /// (which would panic inside whisper-rs).
     fn transcribe_samples(
         &self,
         samples: &[f32],
@@ -57,7 +58,8 @@ impl WhisperModel {
     ///
     /// # Errors
     ///
-    /// Returns an error when the Whisper backend fails.
+    /// Returns an error when the Whisper backend fails, or when
+    /// [`TranscribeConfig::language`] contains a null byte.
     pub fn transcribe_samples(
         &self,
         samples: &[f32],
@@ -93,11 +95,10 @@ impl Transcriber for WhisperModel {
 
         // Use language "auto" for detection-then-transcribe. Do not set
         // detect_language(true): in whisper.cpp that flag means detect and exit.
+        // whisper-rs panics on null bytes inside set_language; reject them here.
         let language_owned = config.language.clone();
-        match language_owned.as_deref() {
-            Some(lang) => params.set_language(Some(lang)),
-            None => params.set_language(Some("auto")),
-        }
+        let language = language_param(language_owned.as_deref())?;
+        params.set_language(Some(language));
 
         state
             .full(params, samples)
@@ -115,6 +116,20 @@ impl Transcriber for WhisperModel {
     ) -> Result<TranscriptionResult> {
         let samples = SymphoniaDecoder::default().decode_file(path.as_ref())?;
         self.transcribe_samples(&samples, config)
+    }
+}
+
+/// Returns the language string for whisper-rs, or an error if it is unsafe.
+///
+/// whisper-rs converts the value with `CString::new(...).expect(...)`, so
+/// embedded null bytes would panic; reject them as invalid configuration.
+fn language_param(language: Option<&str>) -> Result<&str> {
+    match language {
+        None => Ok("auto"),
+        Some(lang) if lang.contains('\0') => Err(Error::InvalidConfig(
+            "language must not contain null bytes".into(),
+        )),
+        Some(lang) => Ok(lang),
     }
 }
 
@@ -152,4 +167,26 @@ fn collect_segments(state: &whisper_rs::WhisperState) -> Result<Vec<Segment>> {
         ));
     }
     Ok(segments)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn language_param_defaults_to_auto() {
+        assert_eq!(language_param(None).unwrap(), "auto");
+    }
+
+    #[test]
+    fn language_param_passes_through_valid_codes() {
+        assert_eq!(language_param(Some("en")).unwrap(), "en");
+    }
+
+    #[test]
+    fn language_param_rejects_null_bytes() {
+        let err = language_param(Some("en\0")).unwrap_err();
+        assert!(matches!(err, Error::InvalidConfig(_)));
+        assert!(err.to_string().contains("null bytes"));
+    }
 }
