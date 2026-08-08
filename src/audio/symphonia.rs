@@ -68,12 +68,11 @@ impl AudioDecoder for SymphoniaDecoder {
             .codec_params
             .sample_rate
             .ok_or_else(|| Error::AudioDecode("missing sample rate".into()))?;
-        let channels = track
+        let mut channels = track
             .codec_params
             .channels
             .map(|c| c.count())
-            .unwrap_or(1)
-            .max(1);
+            .filter(|&n| n > 0);
 
         let mut decoder = symphonia::default::get_codecs()
             .make(&track.codec_params, &DecoderOptions::default())
@@ -104,8 +103,11 @@ impl AudioDecoder for SymphoniaDecoder {
 
             match decoder.decode(&packet) {
                 Ok(decoded) => {
+                    let decoded_channels = decoded.spec().channels.count();
+                    let channel_count = resolve_channels(channels, decoded_channels)?;
+                    channels = Some(channel_count);
                     append_decoded(&decoded, &mut sample_buf, &mut interleaved);
-                    let frames = interleaved.len() / channels;
+                    let frames = interleaved.len() / channel_count;
                     if duration_exceeded(frames, sample_rate, self.max_duration_secs) {
                         return Err(Error::AudioTooLong {
                             max_secs: self.max_duration_secs,
@@ -120,8 +122,27 @@ impl AudioDecoder for SymphoniaDecoder {
             return Err(Error::AudioDecode("no audio samples decoded".into()));
         }
 
+        let channels =
+            channels.ok_or_else(|| Error::AudioDecode("missing channel count".into()))?;
         let mono = to_mono(&interleaved, channels);
         resample_mono(mono, sample_rate, WHISPER_SAMPLE_RATE)
+    }
+}
+
+/// Resolves channel count from optional metadata and a decoded packet.
+///
+/// When `known` is missing, uses `decoded`. When both are present they must
+/// match. A decoded count of zero is always an error.
+fn resolve_channels(known: Option<usize>, decoded: usize) -> Result<usize> {
+    if decoded == 0 {
+        return Err(Error::AudioDecode("missing channel count".into()));
+    }
+    match known {
+        None => Ok(decoded),
+        Some(n) if n == decoded => Ok(n),
+        Some(n) => Err(Error::AudioDecode(format!(
+            "channel count mismatch: metadata={n}, decoded={decoded}"
+        ))),
     }
 }
 
@@ -229,6 +250,30 @@ mod tests {
         let stereo = vec![1.0, 3.0, 2.0, 4.0];
         let mono = to_mono(&stereo, 2);
         assert_eq!(mono, vec![2.0, 3.0]);
+    }
+
+    #[test]
+    fn resolve_channels_uses_decoded_when_metadata_missing() {
+        assert_eq!(resolve_channels(None, 2).unwrap(), 2);
+    }
+
+    #[test]
+    fn resolve_channels_accepts_matching_metadata() {
+        assert_eq!(resolve_channels(Some(2), 2).unwrap(), 2);
+    }
+
+    #[test]
+    fn resolve_channels_rejects_metadata_mismatch() {
+        let err = resolve_channels(Some(1), 2).unwrap_err();
+        assert!(matches!(err, Error::AudioDecode(_)));
+        assert!(err.to_string().contains("channel count mismatch"));
+    }
+
+    #[test]
+    fn resolve_channels_rejects_zero_decoded() {
+        let err = resolve_channels(None, 0).unwrap_err();
+        assert!(matches!(err, Error::AudioDecode(_)));
+        assert!(err.to_string().contains("missing channel count"));
     }
 
     #[test]
