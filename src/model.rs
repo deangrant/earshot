@@ -33,17 +33,17 @@ impl WhisperModel {
     ///
     /// Returns [`Error::CudaUnavailable`] when [`Device::Cuda`] is requested
     /// without the `cuda` feature. Returns [`Error::ModelLoad`] when the
-    /// backend fails to open the model. Returns
-    /// [`Error::ComputeTypeMismatch`] when the loaded weights do not match
-    /// [`ModelConfig::compute_type`].
+    /// backend fails to open the model or rejects the path (including
+    /// non-UTF-8 paths on platforms where the backend requires UTF-8).
+    /// Returns [`Error::ComputeTypeMismatch`] when the loaded weights do not
+    /// match [`ModelConfig::compute_type`].
     pub fn load(path: impl AsRef<Path>, config: ModelConfig) -> Result<Self> {
         let path = path.as_ref().to_path_buf();
         let params = context_params(&config)?;
-        let ctx = WhisperContext::new_with_params(path.to_string_lossy().as_ref(), params)
-            .map_err(|e| Error::ModelLoad {
-                path: path.clone(),
-                message: e.to_string(),
-            })?;
+        let ctx = WhisperContext::new_with_params(&path, params).map_err(|e| Error::ModelLoad {
+            path: path.clone(),
+            message: e.to_string(),
+        })?;
 
         let actual_ftype = ctx.model_ftype();
         if !compute_type_matches(config.compute_type, actual_ftype) {
@@ -168,5 +168,19 @@ mod tests {
         assert!(!compute_type_matches(ComputeType::Int8, 0));
         assert!(!compute_type_matches(ComputeType::Int8, 1));
         assert!(!compute_type_matches(ComputeType::Int8, -1));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn load_preserves_non_utf8_path_in_model_load_error() {
+        use std::ffi::OsStr;
+        use std::os::unix::ffi::OsStrExt;
+
+        let path = PathBuf::from(OsStr::from_bytes(b"model-\xFF.bin"));
+        let err = WhisperModel::load(&path, ModelConfig::default()).unwrap_err();
+        match err {
+            Error::ModelLoad { path: err_path, .. } => assert_eq!(err_path, path),
+            other => panic!("expected ModelLoad, got {other:?}"),
+        }
     }
 }
