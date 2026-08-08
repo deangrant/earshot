@@ -11,6 +11,8 @@ use crate::model::WhisperModel;
 use crate::types::{Segment, TranscriptionResult};
 
 /// Runs speech-to-text over PCM or audio files.
+///
+/// This trait is object-safe and can be used as [`dyn Transcriber`].
 pub trait Transcriber {
     /// Transcribes mono 16 kHz `f32` PCM samples.
     ///
@@ -25,7 +27,23 @@ pub trait Transcriber {
         config: TranscribeConfig,
     ) -> Result<TranscriptionResult>;
 
-    /// Decodes `path` and transcribes it.
+    /// Decodes `path` with `decoder` and transcribes the PCM.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when decoding or transcription fails, including
+    /// [`Error::AudioTooLong`] when decoded audio exceeds the decoder limit.
+    fn transcribe_file_with(
+        &self,
+        decoder: &dyn AudioDecoder,
+        path: &Path,
+        config: TranscribeConfig,
+    ) -> Result<TranscriptionResult> {
+        let samples = decoder.decode_file(path)?;
+        self.transcribe_samples(&samples, config)
+    }
+
+    /// Decodes `path` with the default Symphonia decoder and transcribes it.
     ///
     /// # Errors
     ///
@@ -33,9 +51,11 @@ pub trait Transcriber {
     /// [`Error::AudioTooLong`] when decoded audio exceeds the decoder limit.
     fn transcribe_file(
         &self,
-        path: impl AsRef<Path>,
+        path: &Path,
         config: TranscribeConfig,
-    ) -> Result<TranscriptionResult>;
+    ) -> Result<TranscriptionResult> {
+        self.transcribe_file_with(&SymphoniaDecoder::default(), path, config)
+    }
 }
 
 impl WhisperModel {
@@ -51,7 +71,21 @@ impl WhisperModel {
         path: impl AsRef<Path>,
         config: TranscribeConfig,
     ) -> Result<TranscriptionResult> {
-        Transcriber::transcribe_file(self, path, config)
+        Transcriber::transcribe_file(self, path.as_ref(), config)
+    }
+
+    /// Decodes an audio file with `decoder` and transcribes it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when decoding or transcription fails.
+    pub fn transcribe_file_with(
+        &self,
+        decoder: &impl AudioDecoder,
+        path: impl AsRef<Path>,
+        config: TranscribeConfig,
+    ) -> Result<TranscriptionResult> {
+        Transcriber::transcribe_file_with(self, decoder, path.as_ref(), config)
     }
 
     /// Transcribes pre-decoded mono 16 kHz PCM samples.
@@ -108,15 +142,6 @@ impl Transcriber for WhisperModel {
         let segments = collect_segments(&state)?;
         Ok(TranscriptionResult::from_segments(language, segments))
     }
-
-    fn transcribe_file(
-        &self,
-        path: impl AsRef<Path>,
-        config: TranscribeConfig,
-    ) -> Result<TranscriptionResult> {
-        let samples = SymphoniaDecoder::default().decode_file(path.as_ref())?;
-        self.transcribe_samples(&samples, config)
-    }
 }
 
 /// Returns the language string for whisper-rs, or an error if it is unsafe.
@@ -169,6 +194,8 @@ fn collect_segments(state: &whisper_rs::WhisperState) -> Result<Vec<Segment>> {
     Ok(segments)
 }
 
+const _: Option<&dyn Transcriber> = None;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -188,5 +215,63 @@ mod tests {
         let err = language_param(Some("en\0")).unwrap_err();
         assert!(matches!(err, Error::InvalidConfig(_)));
         assert!(err.to_string().contains("null bytes"));
+    }
+
+    struct StubTranscriber;
+
+    impl Transcriber for StubTranscriber {
+        fn transcribe_samples(
+            &self,
+            samples: &[f32],
+            _config: TranscribeConfig,
+        ) -> Result<TranscriptionResult> {
+            if samples.is_empty() {
+                return Err(Error::InvalidConfig(
+                    "audio samples must not be empty".into(),
+                ));
+            }
+            Ok(TranscriptionResult::from_segments("en", vec![]))
+        }
+    }
+
+    struct EmptyDecoder;
+
+    impl AudioDecoder for EmptyDecoder {
+        fn decode_file(&self, _path: &Path) -> Result<Vec<f32>> {
+            Ok(Vec::new())
+        }
+    }
+
+    struct FixedDecoder;
+
+    impl AudioDecoder for FixedDecoder {
+        fn decode_file(&self, _path: &Path) -> Result<Vec<f32>> {
+            Ok(vec![0.0; 16])
+        }
+    }
+
+    #[test]
+    fn transcribe_file_with_uses_injected_decoder() {
+        let err = StubTranscriber
+            .transcribe_file_with(
+                &EmptyDecoder,
+                Path::new("unused.wav"),
+                TranscribeConfig::default(),
+            )
+            .unwrap_err();
+        assert!(matches!(err, Error::InvalidConfig(_)));
+    }
+
+    #[test]
+    fn transcribe_file_with_forwards_decoded_samples() {
+        let result = StubTranscriber
+            .transcribe_file_with(
+                &FixedDecoder,
+                Path::new("unused.wav"),
+                TranscribeConfig::default(),
+            )
+            .unwrap();
+        assert_eq!(result.language, "en");
+        assert!(result.segments.is_empty());
     }
 }
