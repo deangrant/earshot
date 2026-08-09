@@ -1,0 +1,13 @@
+---
+description: Keep examples minimal and trust-aware
+globs: examples/**/*.rs
+alwaysApply: false
+---
+
+# Examples
+
+- Keep examples small and focused (CLI args over large config surfaces).
+- Document model + audio usage; remind that model paths are a trust boundary.
+- Gate CUDA with `cfg!(feature = "cuda")`; do not require a GPU for the default
+  example path.
+- Prefer `anyhow` only in examples/dev-dependencies, not in the library crate.

@@ -1,0 +1,15 @@
+---
+description: Conventions for earshot GitHub Actions workflows
+globs: .github/**/*.yml
+alwaysApply: false
+---
+
+# GitHub Actions
+
+- Pin third-party actions to full commit SHAs (match existing workflows).
+- Use `permissions: contents: read` unless a job needs more.
+- Install native deps for whisper builds: `build-essential`, `cmake`,
+  `pkg-config`, `libclang-dev`.
+- Do not enable `--all-features` / CUDA on `ubuntu-latest` by default.
+- Generate `Cargo.lock` when missing before test/clippy/audit.
+- Keep lint, test, and audit as separate workflows.

@@ -1,11 +1,32 @@
 {
-    "version": 1,
-    "hooks": {
-        "afterFileEdit": [
-            {
-                "command": ".agents/hooks/rustfmt.sh",
-                "matcher": "Write|TabWrite"
-            }
-        ]
-    }
+  "version": 1,
+  "hooks": {
+    "sessionStart": [
+      {
+        "command": ".agents/hooks/session-context.sh"
+      }
+    ],
+    "afterFileEdit": [
+      {
+        "command": ".agents/hooks/rustfmt.sh",
+        "matcher": "Write|TabWrite"
+      }
+    ],
+    "beforeShellExecution": [
+      {
+        "command": ".agents/hooks/shell-safety.sh"
+      }
+    ],
+    "beforeReadFile": [
+      {
+        "command": ".agents/hooks/warn-binaries.sh"
+      }
+    ],
+    "stop": [
+      {
+        "command": ".agents/hooks/suggest-lint.sh",
+        "loop_limit": 1
+      }
+    ]
+  }
 }

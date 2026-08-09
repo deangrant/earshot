@@ -1,0 +1,27 @@
+---
+description: Earshot project brief — modules, CUDA/FFmpeg constraints, skills to use
+alwaysApply: true
+---
+
+# Earshot core
+
+Earshot is a Rust library crate for Whisper speech-to-text via whisper.cpp
+(`whisper-rs`), with Symphonia decoding (no FFmpeg).
+
+## Modules
+
+- `audio` — `AudioDecoder`, `SymphoniaDecoder`, sample-rate constants
+- `engine` — `Transcriber` trait; `WhisperModel` transcription methods
+- `model` — load/own `WhisperContext`
+- `config` — `ModelConfig`, `TranscribeConfig`, `Device`, `ComputeType`
+- `types` — `Segment`, `TranscriptionResult`
+- `error` — crate `Error` / `Result`
+
+## Constraints
+
+- CUDA is opt-in (`features = ["cuda"]`); default CI and commands omit it.
+- Do not add an FFmpeg dependency or assume it is installed.
+- Prefer surgical diffs; match existing style.
+- When editing Rust, follow `.agents/skills/solid-rust` and
+  `.agents/skills/style-guide-rust`.
+- Format with nightly rustfmt (`cargo +nightly fmt`) to honor `rustfmt.toml`.

@@ -1,0 +1,14 @@
+---
+description: Keep agent commands aligned with GitHub Actions CI
+globs: .github/workflows/**,.agents/commands/**
+alwaysApply: false
+---
+
+# CI parity
+
+- Source of truth: `.github/workflows/test.yml`, `lint.yml`, `audit.yml`.
+- When workflows change, update only `.agents/commands/*` (never `.cursor/commands`).
+- Default local/CI commands must **not** use `--all-features` (CUDA).
+- Formatting checks use `cargo +nightly fmt` because of unstable rustfmt options.
+- Clippy and tests use stable with default features.
+- Generate `Cargo.lock` in CI when missing; the lockfile is gitignored for the library.

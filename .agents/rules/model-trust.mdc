@@ -1,0 +1,16 @@
+---
+description: GGML model files are a native-code trust boundary
+globs: src/model.rs,README.md,examples/**/*
+alwaysApply: false
+---
+
+# Model trust
+
+- GGML / `.bin` model paths are loaded by native whisper.cpp — treat them as a
+  **trust boundary**.
+- Only load models from origins the user trusts; do not add helpers that
+  download arbitrary remote weights without explicit trust documentation.
+- Document process-crash risk with `# Abort` on `WhisperModel::load`.
+- Keep large `*.bin` artifacts gitignored; do not commit model weights.
+- Prefer quantized files (for example `*-q8_0.bin`) with `ComputeType::Int8`,
+  and rely on load-time `model_ftype` validation.

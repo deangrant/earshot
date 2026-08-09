@@ -1,0 +1,18 @@
+---
+description: Public Rust API and documentation contracts for earshot
+globs: src/**/*.rs
+alwaysApply: false
+---
+
+# Rust API
+
+- The crate uses `#![deny(missing_docs)]`; keep public items documented.
+- Use `#[doc(inline)]` on crate-level `pub use` of local items only.
+- Document `Result`-returning APIs with `# Errors`.
+- Use `# Abort` when native code may crash the process (model load).
+- Use `# Panics` only for true Rust panics; do not call config checks "unsafe".
+- `AudioDecoder::decode_file` success means **non-empty** mono 16 kHz PCM.
+- Empty PCM into transcription is `Error::InvalidConfig`.
+- Wire concrete decoders (`SymphoniaDecoder`) on `WhisperModel` (composition
+  root), not as defaults inside the `Transcriber` trait.
+- Prefer `transcribe_file_with` for injectable/testable decode paths.
