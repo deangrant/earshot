@@ -7,9 +7,9 @@ use rubato::{
     Resampler, SincFixedIn, SincInterpolationParameters, SincInterpolationType, WindowFunction,
 };
 use symphonia::core::audio::{AudioBufferRef, SampleBuffer};
-use symphonia::core::codecs::{DecoderOptions, CODEC_TYPE_NULL};
+use symphonia::core::codecs::{CodecParameters, DecoderOptions, CODEC_TYPE_NULL};
 use symphonia::core::errors::Error as SymphoniaError;
-use symphonia::core::formats::FormatOptions;
+use symphonia::core::formats::{FormatOptions, FormatReader, Packet};
 use symphonia::core::io::MediaSourceStream;
 use symphonia::core::meta::MetadataOptions;
 use symphonia::core::probe::Hint;
@@ -32,107 +32,138 @@ impl Default for SymphoniaDecoder {
     }
 }
 
+/// Metadata for the selected audio track used during packet decode.
+struct TrackInfo {
+    track_id: u32,
+    sample_rate: u32,
+    metadata_channels: Option<usize>,
+    codec_params: CodecParameters,
+}
+
 impl AudioDecoder for SymphoniaDecoder {
     fn decode_file(&self, path: &Path) -> Result<Vec<f32>> {
-        let file = File::open(path).map_err(|source| Error::AudioIo {
-            path: path.to_path_buf(),
-            source,
-        })?;
-        let mss = MediaSourceStream::new(Box::new(file), Default::default());
-
-        let mut hint = Hint::new();
-        if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
-            hint.with_extension(ext);
-        }
-
-        let probed = symphonia::default::get_probe()
-            .format(
-                &hint,
-                mss,
-                &FormatOptions::default(),
-                &MetadataOptions::default(),
-            )
-            .map_err(|e| Error::AudioDecode(e.to_string()))?;
-
-        let mut format = probed.format;
-        let track = format
-            .tracks()
-            .iter()
-            .find(|t| t.codec_params.codec != CODEC_TYPE_NULL)
-            .ok_or_else(|| Error::NoAudioTrack {
-                path: path.to_path_buf(),
-            })?;
-
-        let track_id = track.id;
-        let sample_rate = track
-            .codec_params
-            .sample_rate
-            .ok_or_else(|| Error::AudioDecode("missing sample rate".into()))?;
-        let metadata_channels = track
-            .codec_params
-            .channels
-            .map(|c| c.count())
-            .filter(|&n| n > 0);
-        let mut channels = metadata_channels;
-
-        let mut decoder = symphonia::default::get_codecs()
-            .make(&track.codec_params, &DecoderOptions::default())
-            .map_err(|e| Error::AudioDecode(e.to_string()))?;
-
-        let mut interleaved = Vec::new();
-        let mut sample_buf: Option<SampleBuffer<f32>> = None;
-
-        loop {
-            let packet = match format.next_packet() {
-                Ok(packet) => packet,
-                Err(SymphoniaError::IoError(e))
-                    if e.kind() == std::io::ErrorKind::UnexpectedEof =>
-                {
-                    break;
-                }
-                // Format-level reset requires re-examining tracks and recreating
-                // decoders; that path is unsupported here.
-                Err(SymphoniaError::ResetRequired) => {
-                    return Err(Error::UnsupportedBitstreamReset);
-                }
-                Err(e) => return Err(Error::AudioDecode(e.to_string())),
-            };
-
-            if packet.track_id() != track_id {
-                continue;
-            }
-
-            match decoder.decode(&packet) {
-                Ok(decoded) => {
-                    let decoded_channels = decoded.spec().channels.count();
-                    let channel_count = resolve_channels(channels, decoded_channels)?;
-                    channels = Some(channel_count);
-                    append_decoded(&decoded, &mut sample_buf, &mut interleaved);
-                    let frames = interleaved.len() / channel_count;
-                    if duration_exceeded(frames, sample_rate, self.max_duration_secs) {
-                        return Err(Error::AudioTooLong {
-                            max_secs: self.max_duration_secs,
-                        });
-                    }
-                }
-                // Decoder-level reset: clear local PCM state and continue.
-                Err(SymphoniaError::ResetRequired) => {
-                    decoder.reset();
-                    sample_buf = None;
-                    channels = metadata_channels;
-                }
-                Err(e) => return Err(Error::AudioDecode(e.to_string())),
-            }
-        }
-
-        if interleaved.is_empty() {
-            return Err(Error::AudioDecode("no audio samples decoded".into()));
-        }
-
-        let channels =
-            channels.ok_or_else(|| Error::AudioDecode("missing channel count".into()))?;
+        let mut format = open_format(path)?;
+        let track = select_audio_track(format.as_ref(), path)?;
+        let (interleaved, channels) =
+            decode_interleaved(format.as_mut(), &track, self.max_duration_secs)?;
         let mono = to_mono(&interleaved, channels);
-        resample_mono(mono, sample_rate, WHISPER_SAMPLE_RATE)
+        resample_mono(mono, track.sample_rate, WHISPER_SAMPLE_RATE)
+    }
+}
+
+/// Opens and probes `path` into a Symphonia format reader.
+fn open_format(path: &Path) -> Result<Box<dyn FormatReader>> {
+    let file = File::open(path).map_err(|source| Error::AudioIo {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    let mss = MediaSourceStream::new(Box::new(file), Default::default());
+
+    let mut hint = Hint::new();
+    if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+        hint.with_extension(ext);
+    }
+
+    let probed = symphonia::default::get_probe()
+        .format(
+            &hint,
+            mss,
+            &FormatOptions::default(),
+            &MetadataOptions::default(),
+        )
+        .map_err(|e| Error::AudioDecode(e.to_string()))?;
+    Ok(probed.format)
+}
+
+/// Selects the first non-null codec track and copies its decode parameters.
+fn select_audio_track(format: &dyn FormatReader, path: &Path) -> Result<TrackInfo> {
+    let track = format
+        .tracks()
+        .iter()
+        .find(|t| t.codec_params.codec != CODEC_TYPE_NULL)
+        .ok_or_else(|| Error::NoAudioTrack {
+            path: path.to_path_buf(),
+        })?;
+
+    let sample_rate = track
+        .codec_params
+        .sample_rate
+        .ok_or_else(|| Error::AudioDecode("missing sample rate".into()))?;
+    let metadata_channels = track
+        .codec_params
+        .channels
+        .map(|c| c.count())
+        .filter(|&n| n > 0);
+
+    Ok(TrackInfo {
+        track_id: track.id,
+        sample_rate,
+        metadata_channels,
+        codec_params: track.codec_params.clone(),
+    })
+}
+
+/// Decodes all packets for `track` into interleaved PCM and a channel count.
+fn decode_interleaved(
+    format: &mut dyn FormatReader,
+    track: &TrackInfo,
+    max_duration_secs: u64,
+) -> Result<(Vec<f32>, usize)> {
+    let mut decoder = symphonia::default::get_codecs()
+        .make(&track.codec_params, &DecoderOptions::default())
+        .map_err(|e| Error::AudioDecode(e.to_string()))?;
+
+    let mut interleaved = Vec::new();
+    let mut sample_buf: Option<SampleBuffer<f32>> = None;
+    let mut channels = track.metadata_channels;
+
+    while let Some(packet) = next_track_packet(format, track.track_id)? {
+        match decoder.decode(&packet) {
+            Ok(decoded) => {
+                let decoded_channels = decoded.spec().channels.count();
+                let channel_count = resolve_channels(channels, decoded_channels)?;
+                channels = Some(channel_count);
+                append_decoded(&decoded, &mut sample_buf, &mut interleaved);
+                let frames = interleaved.len() / channel_count;
+                if duration_exceeded(frames, track.sample_rate, max_duration_secs) {
+                    return Err(Error::AudioTooLong {
+                        max_secs: max_duration_secs,
+                    });
+                }
+            }
+            // Clear local PCM state and continue after a decoder-level reset.
+            Err(SymphoniaError::ResetRequired) => {
+                decoder.reset();
+                sample_buf = None;
+                channels = track.metadata_channels;
+            }
+            Err(e) => return Err(Error::AudioDecode(e.to_string())),
+        }
+    }
+
+    if interleaved.is_empty() {
+        return Err(Error::AudioDecode("no audio samples decoded".into()));
+    }
+
+    let channels = channels.ok_or_else(|| Error::AudioDecode("missing channel count".into()))?;
+    Ok((interleaved, channels))
+}
+
+/// Reads the next packet for `track_id`, or `None` at end of stream.
+fn next_track_packet(format: &mut dyn FormatReader, track_id: u32) -> Result<Option<Packet>> {
+    loop {
+        match format.next_packet() {
+            Ok(packet) if packet.track_id() == track_id => return Ok(Some(packet)),
+            Ok(_) => continue,
+            Err(SymphoniaError::IoError(e)) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
+                return Ok(None);
+            }
+            // Format-level reset needs track re-probe; that path is unsupported.
+            Err(SymphoniaError::ResetRequired) => {
+                return Err(Error::UnsupportedBitstreamReset);
+            }
+            Err(e) => return Err(Error::AudioDecode(e.to_string())),
+        }
     }
 }
 
@@ -200,7 +231,12 @@ fn resample_mono(samples: Vec<f32>, from_rate: u32, to_rate: u32) -> Result<Vec<
 
     let expected_len =
         (samples.len() as f64 * f64::from(to_rate) / f64::from(from_rate)).round() as usize;
+    let mut resampler = build_resampler(from_rate, to_rate, samples.len())?;
+    process_and_trim(&mut resampler, samples, expected_len)
+}
 
+/// Builds a fixed-input sinc resampler for a mono buffer of `input_len` samples.
+fn build_resampler(from_rate: u32, to_rate: u32, input_len: usize) -> Result<SincFixedIn<f32>> {
     let params = SincInterpolationParameters {
         sinc_len: 256,
         f_cutoff: 0.95,
@@ -209,15 +245,22 @@ fn resample_mono(samples: Vec<f32>, from_rate: u32, to_rate: u32) -> Result<Vec<
         window: WindowFunction::BlackmanHarris2,
     };
 
-    let mut resampler = SincFixedIn::<f32>::new(
+    SincFixedIn::<f32>::new(
         f64::from(to_rate) / f64::from(from_rate),
         2.0,
         params,
-        samples.len(),
+        input_len,
         1,
     )
-    .map_err(|e| Error::AudioDecode(format!("resampler init failed: {e}")))?;
+    .map_err(|e| Error::AudioDecode(format!("resampler init failed: {e}")))
+}
 
+/// Processes `samples` through `resampler`, flushes delay, and trims to length.
+fn process_and_trim(
+    resampler: &mut SincFixedIn<f32>,
+    samples: Vec<f32>,
+    expected_len: usize,
+) -> Result<Vec<f32>> {
     let delay = resampler.output_delay();
     let waves_in = vec![samples];
     let mut waves_out = resampler
@@ -248,9 +291,9 @@ fn resample_mono(samples: Vec<f32>, from_rate: u32, to_rate: u32) -> Result<Vec<
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     use symphonia::core::audio::{AsAudioBufferRef, AudioBuffer, Layout, Signal, SignalSpec};
+
+    use super::*;
 
     #[test]
     fn mono_averages_channels() {

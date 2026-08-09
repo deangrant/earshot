@@ -21,13 +21,15 @@ impl WhisperModel {
     /// [`ComputeType::Int8`] is selected. After open, the model's
     /// `model_ftype` is checked against [`ModelConfig::compute_type`].
     ///
-    /// # Security
-    ///
     /// Model files are loaded and parsed by native whisper.cpp code. Treat
     /// `path` as a trust boundary: only load models from sources you trust
-    /// (for example known publishers), not arbitrary user uploads. Corrupt or
-    /// adversarial files may crash the process or worse; this is not a
-    /// sandboxed loader.
+    /// (for example known publishers), not arbitrary user uploads. This is
+    /// not a sandboxed loader.
+    ///
+    /// # Abort
+    ///
+    /// Corrupt or adversarial model files may abort or crash the process
+    /// inside native whisper.cpp.
     ///
     /// # Errors
     ///

@@ -1,5 +1,7 @@
 //! Result types produced by transcription.
 
+use std::fmt;
+
 /// A timed text segment from a transcription.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Segment {
@@ -25,6 +27,12 @@ impl Segment {
             end: end_cs as f64 / 100.0,
             text: text.into(),
         }
+    }
+}
+
+impl fmt::Display for Segment {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.text)
     }
 }
 
@@ -60,6 +68,12 @@ impl TranscriptionResult {
             text,
             segments,
         }
+    }
+}
+
+impl fmt::Display for TranscriptionResult {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.text)
     }
 }
 
@@ -106,5 +120,23 @@ mod tests {
         assert_eq!(result.segments[1].text, "");
         assert!((result.segments[1].start - 1.0).abs() < f64::EPSILON);
         assert!((result.segments[1].end - 1.5).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn segment_display_writes_text() {
+        let seg = Segment::from_centiseconds(0, 100, "hello");
+        assert_eq!(seg.to_string(), "hello");
+    }
+
+    #[test]
+    fn transcription_result_display_writes_joined_text() {
+        let result = TranscriptionResult::from_segments(
+            "en",
+            vec![
+                Segment::from_centiseconds(0, 100, "Hello"),
+                Segment::from_centiseconds(100, 200, "world"),
+            ],
+        );
+        assert_eq!(result.to_string(), "Hello world");
     }
 }

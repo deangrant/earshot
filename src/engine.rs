@@ -18,10 +18,12 @@ pub trait Transcriber {
     ///
     /// # Errors
     ///
-    /// Returns an error when the Whisper backend fails, language metadata
-    /// cannot be read, [`TranscribeConfig::n_threads`] is less than 1,
+    /// Returns [`Error::InvalidConfig`] when `samples` is empty, when
+    /// [`TranscribeConfig::n_threads`] is less than 1, or when
     /// [`TranscribeConfig::language`] contains a null byte (which would panic
-    /// inside whisper-rs), or segment timestamps are inconsistent.
+    /// inside whisper-rs). Returns an error when the Whisper backend fails,
+    /// language metadata cannot be read, or segment timestamps are
+    /// inconsistent.
     fn transcribe_samples(
         &self,
         samples: &[f32],
@@ -33,7 +35,9 @@ pub trait Transcriber {
     /// # Errors
     ///
     /// Returns an error when decoding or transcription fails, including
-    /// [`Error::AudioTooLong`] when decoded audio exceeds the decoder limit.
+    /// [`Error::AudioTooLong`] when decoded audio exceeds the decoder limit,
+    /// and the empty-PCM / config / timestamp failures described by
+    /// [`Self::transcribe_samples`].
     fn transcribe_file_with(
         &self,
         decoder: &dyn AudioDecoder,
@@ -42,20 +46,6 @@ pub trait Transcriber {
     ) -> Result<TranscriptionResult> {
         let samples = decoder.decode_file(path)?;
         self.transcribe_samples(&samples, config)
-    }
-
-    /// Decodes `path` with the default Symphonia decoder and transcribes it.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when decoding or transcription fails, including
-    /// [`Error::AudioTooLong`] when decoded audio exceeds the decoder limit.
-    fn transcribe_file(
-        &self,
-        path: &Path,
-        config: TranscribeConfig,
-    ) -> Result<TranscriptionResult> {
-        self.transcribe_file_with(&SymphoniaDecoder::default(), path, config)
     }
 }
 
@@ -66,20 +56,25 @@ impl WhisperModel {
     ///
     /// Returns an error when decoding or transcription fails, including
     /// [`Error::AudioTooLong`] when decoded audio exceeds the default
-    /// maximum duration ([`crate::MAX_AUDIO_DURATION_SECS`]).
+    /// maximum duration ([`crate::MAX_AUDIO_DURATION_SECS`]), and the
+    /// empty-PCM / config / timestamp failures described by
+    /// [`Self::transcribe_samples`].
     pub fn transcribe_file(
         &self,
         path: impl AsRef<Path>,
         config: TranscribeConfig,
     ) -> Result<TranscriptionResult> {
-        Transcriber::transcribe_file(self, path.as_ref(), config)
+        self.transcribe_file_with(&SymphoniaDecoder::default(), path, config)
     }
 
     /// Decodes an audio file with `decoder` and transcribes it.
     ///
     /// # Errors
     ///
-    /// Returns an error when decoding or transcription fails.
+    /// Returns an error when decoding or transcription fails, including
+    /// [`Error::AudioTooLong`] when decoded audio exceeds the decoder limit,
+    /// decode failures from `decoder`, and the empty-PCM / config / timestamp
+    /// failures described by [`Self::transcribe_samples`].
     pub fn transcribe_file_with(
         &self,
         decoder: &impl AudioDecoder,
@@ -93,10 +88,10 @@ impl WhisperModel {
     ///
     /// # Errors
     ///
-    /// Returns an error when the Whisper backend fails, when
-    /// [`TranscribeConfig::n_threads`] is less than 1, when
-    /// [`TranscribeConfig::language`] contains a null byte, or when segment
-    /// timestamps are inconsistent.
+    /// Returns [`Error::InvalidConfig`] when `samples` is empty, when
+    /// [`TranscribeConfig::n_threads`] is less than 1, or when
+    /// [`TranscribeConfig::language`] contains a null byte. Returns an error
+    /// when the Whisper backend fails or segment timestamps are inconsistent.
     pub fn transcribe_samples(
         &self,
         samples: &[f32],
@@ -132,8 +127,9 @@ impl Transcriber for WhisperModel {
         params.set_print_timestamps(false);
 
         // Use language "auto" for detection-then-transcribe. Do not set
-        // detect_language(true): in whisper.cpp that flag means detect and exit.
-        // whisper-rs panics on null bytes inside set_language; reject them here.
+        // detect_language(true): in whisper.cpp that flag means detect and
+        // exit. Whisper-rs panics on null bytes inside set_language; reject
+        // them here.
         let language_owned = config.language.clone();
         let language = language_param(language_owned.as_deref())?;
         params.set_language(Some(language));
@@ -148,9 +144,9 @@ impl Transcriber for WhisperModel {
     }
 }
 
-/// Returns the language string for whisper-rs, or an error if it is unsafe.
+/// Returns the language string for whisper-rs, rejecting null bytes.
 ///
-/// whisper-rs converts the value with `CString::new(...).expect(...)`, so
+/// Whisper-rs converts the value with `CString::new(...).expect(...)`, so
 /// embedded null bytes would panic; reject them as invalid configuration.
 fn language_param(language: Option<&str>) -> Result<&str> {
     match language {
@@ -225,6 +221,7 @@ fn collect_segments(state: &whisper_rs::WhisperState) -> Result<Vec<Segment>> {
     Ok(segments)
 }
 
+// Ensures `Transcriber` stays object-safe (`dyn Transcriber`).
 const _: Option<&dyn Transcriber> = None;
 
 #[cfg(test)]
@@ -301,11 +298,11 @@ mod tests {
         }
     }
 
-    struct EmptyDecoder;
+    struct FailingDecoder;
 
-    impl AudioDecoder for EmptyDecoder {
+    impl AudioDecoder for FailingDecoder {
         fn decode_file(&self, _path: &Path) -> Result<Vec<f32>> {
-            Ok(Vec::new())
+            Err(Error::AudioDecode("no audio samples decoded".into()))
         }
     }
 
@@ -318,15 +315,24 @@ mod tests {
     }
 
     #[test]
-    fn transcribe_file_with_uses_injected_decoder() {
+    fn transcribe_samples_rejects_empty_pcm() {
+        let err = StubTranscriber
+            .transcribe_samples(&[], TranscribeConfig::default())
+            .unwrap_err();
+        assert!(matches!(err, Error::InvalidConfig(_)));
+        assert!(err.to_string().contains("empty"));
+    }
+
+    #[test]
+    fn transcribe_file_with_propagates_decode_errors() {
         let err = StubTranscriber
             .transcribe_file_with(
-                &EmptyDecoder,
+                &FailingDecoder,
                 Path::new("unused.wav"),
                 TranscribeConfig::default(),
             )
             .unwrap_err();
-        assert!(matches!(err, Error::InvalidConfig(_)));
+        assert!(matches!(err, Error::AudioDecode(_)));
     }
 
     #[test]
