@@ -13,7 +13,7 @@ default = []
 cuda = ["whisper-rs/cuda"]
 
 [dependencies]
-rubato = "0.16"
+rubato = "4.0"
 symphonia = { version = "0.5", default-features = false, features = ["mp3", "wav", "flac", "aac", "isomp4", "pcm"] }
 thiserror = "2"
 whisper-rs = "0.16"
