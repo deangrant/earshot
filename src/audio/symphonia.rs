@@ -5,13 +5,15 @@ use std::path::Path;
 
 use rubato::audioadapter_buffers::direct::InterleavedSlice;
 use rubato::{Fft, FixedSync, Resampler};
-use symphonia::core::audio::{AudioBufferRef, SampleBuffer};
-use symphonia::core::codecs::{CodecParameters, DecoderOptions, CODEC_TYPE_NULL};
+use symphonia::core::audio::{Channels, GenericAudioBufferRef};
+use symphonia::core::codecs::audio::{AudioCodecParameters, AudioDecoderOptions};
+use symphonia::core::codecs::CodecParameters;
 use symphonia::core::errors::Error as SymphoniaError;
-use symphonia::core::formats::{FormatOptions, FormatReader, Packet};
+use symphonia::core::formats::probe::Hint;
+use symphonia::core::formats::{FormatOptions, FormatReader, TrackType};
 use symphonia::core::io::MediaSourceStream;
 use symphonia::core::meta::MetadataOptions;
-use symphonia::core::probe::Hint;
+use symphonia::core::packet::Packet;
 
 use crate::audio::decoder::{AudioDecoder, MAX_AUDIO_DURATION_SECS, WHISPER_SAMPLE_RATE};
 use crate::error::{Error, Result};
@@ -36,7 +38,7 @@ struct TrackInfo {
     track_id: u32,
     sample_rate: u32,
     metadata_channels: Option<usize>,
-    codec_params: CodecParameters,
+    codec_params: AudioCodecParameters,
 }
 
 impl AudioDecoder for SymphoniaDecoder {
@@ -63,42 +65,47 @@ fn open_format(path: &Path) -> Result<Box<dyn FormatReader>> {
         hint.with_extension(ext);
     }
 
-    let probed = symphonia::default::get_probe()
-        .format(
+    symphonia::default::get_probe()
+        .probe(
             &hint,
             mss,
-            &FormatOptions::default(),
-            &MetadataOptions::default(),
+            FormatOptions::default(),
+            MetadataOptions::default(),
         )
-        .map_err(|e| Error::AudioDecode(e.to_string()))?;
-    Ok(probed.format)
+        .map_err(|e| Error::AudioDecode(e.to_string()))
 }
 
-/// Selects the first non-null codec track and copies its decode parameters.
+/// Selects the default audio track and copies its decode parameters.
 fn select_audio_track(format: &dyn FormatReader, path: &Path) -> Result<TrackInfo> {
     let track = format
-        .tracks()
-        .iter()
-        .find(|t| t.codec_params.codec != CODEC_TYPE_NULL)
+        .default_track(TrackType::Audio)
         .ok_or_else(|| Error::NoAudioTrack {
             path: path.to_path_buf(),
         })?;
 
-    let sample_rate = track
-        .codec_params
+    let codec_params = match track.codec_params.as_ref() {
+        Some(CodecParameters::Audio(params)) => params.clone(),
+        _ => {
+            return Err(Error::NoAudioTrack {
+                path: path.to_path_buf(),
+            });
+        }
+    };
+
+    let sample_rate = codec_params
         .sample_rate
         .ok_or_else(|| Error::AudioDecode("missing sample rate".into()))?;
-    let metadata_channels = track
-        .codec_params
+    let metadata_channels = codec_params
         .channels
-        .map(|c| c.count())
+        .as_ref()
+        .map(Channels::count)
         .filter(|&n| n > 0);
 
     Ok(TrackInfo {
         track_id: track.id,
         sample_rate,
         metadata_channels,
-        codec_params: track.codec_params.clone(),
+        codec_params,
     })
 }
 
@@ -109,20 +116,19 @@ fn decode_interleaved(
     max_duration_secs: u64,
 ) -> Result<(Vec<f32>, usize)> {
     let mut decoder = symphonia::default::get_codecs()
-        .make(&track.codec_params, &DecoderOptions::default())
+        .make_audio_decoder(&track.codec_params, &AudioDecoderOptions::default())
         .map_err(|e| Error::AudioDecode(e.to_string()))?;
 
     let mut interleaved = Vec::new();
-    let mut sample_buf: Option<SampleBuffer<f32>> = None;
     let mut channels = track.metadata_channels;
 
     while let Some(packet) = next_track_packet(format, track.track_id)? {
         match decoder.decode(&packet) {
             Ok(decoded) => {
-                let decoded_channels = decoded.spec().channels.count();
+                let decoded_channels = decoded.spec().channels().count();
                 let channel_count = resolve_channels(channels, decoded_channels)?;
                 channels = Some(channel_count);
-                append_decoded(&decoded, &mut sample_buf, &mut interleaved);
+                append_decoded(&decoded, &mut interleaved);
                 let frames = interleaved.len() / channel_count;
                 if duration_exceeded(frames, track.sample_rate, max_duration_secs) {
                     return Err(Error::AudioTooLong {
@@ -133,7 +139,6 @@ fn decode_interleaved(
             // Clear local PCM state and continue after a decoder-level reset.
             Err(SymphoniaError::ResetRequired) => {
                 decoder.reset();
-                sample_buf = None;
                 channels = track.metadata_channels;
             }
             Err(e) => return Err(Error::AudioDecode(e.to_string())),
@@ -152,11 +157,9 @@ fn decode_interleaved(
 fn next_track_packet(format: &mut dyn FormatReader, track_id: u32) -> Result<Option<Packet>> {
     loop {
         match format.next_packet() {
-            Ok(packet) if packet.track_id() == track_id => return Ok(Some(packet)),
-            Ok(_) => continue,
-            Err(SymphoniaError::IoError(e)) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
-                return Ok(None);
-            }
+            Ok(None) => return Ok(None),
+            Ok(Some(packet)) if packet.track_id == track_id => return Ok(Some(packet)),
+            Ok(Some(_)) => continue,
             // Format-level reset needs track re-probe; that path is unsupported.
             Err(SymphoniaError::ResetRequired) => {
                 return Err(Error::UnsupportedBitstreamReset);
@@ -192,25 +195,11 @@ fn duration_exceeded(frames: usize, sample_rate: u32, max_secs: u64) -> bool {
     frames as u64 > max_frames
 }
 
-fn append_decoded(
-    decoded: &AudioBufferRef<'_>,
-    sample_buf: &mut Option<SampleBuffer<f32>>,
-    out: &mut Vec<f32>,
-) {
-    let spec = *decoded.spec();
-    let frames = decoded.capacity() as u64;
-    let needed = decoded.capacity() * spec.channels.count();
-    let needs_new = sample_buf
-        .as_ref()
-        .map(|buf| buf.capacity() < needed)
-        .unwrap_or(true);
-    if needs_new {
-        *sample_buf = Some(SampleBuffer::<f32>::new(frames, spec));
-    }
-    if let Some(buf) = sample_buf.as_mut() {
-        buf.copy_interleaved_ref(decoded.clone());
-        out.extend_from_slice(buf.samples());
-    }
+fn append_decoded(decoded: &GenericAudioBufferRef<'_>, out: &mut Vec<f32>) {
+    let n_samples = decoded.frames() * decoded.spec().channels().count();
+    let start = out.len();
+    out.resize(start + n_samples, 0.0);
+    decoded.copy_to_slice_interleaved(&mut out[start..]);
 }
 
 fn to_mono(interleaved: &[f32], channels: usize) -> Vec<f32> {
@@ -250,7 +239,7 @@ fn resample_mono(samples: Vec<f32>, from_rate: u32, to_rate: u32) -> Result<Vec<
 
 #[cfg(test)]
 mod tests {
-    use symphonia::core::audio::{AsAudioBufferRef, AudioBuffer, Layout, Signal, SignalSpec};
+    use symphonia::core::audio::{layouts, AsGenericAudioBufferRef, AudioBuffer, AudioSpec};
 
     use super::*;
 
@@ -318,27 +307,22 @@ mod tests {
     }
 
     #[test]
-    fn append_decoded_grows_sample_buffer_for_larger_packets() {
+    fn append_decoded_appends_successive_packets() {
         let small = filled_mono_buffer(8, 0.25);
         let large = filled_mono_buffer(64, 0.5);
-        let mut sample_buf = None;
         let mut out = Vec::new();
 
-        append_decoded(&small.as_audio_buffer_ref(), &mut sample_buf, &mut out);
+        append_decoded(&small.as_generic_audio_buffer_ref(), &mut out);
         assert_eq!(out.len(), 8);
 
-        append_decoded(&large.as_audio_buffer_ref(), &mut sample_buf, &mut out);
+        append_decoded(&large.as_generic_audio_buffer_ref(), &mut out);
         assert_eq!(out.len(), 8 + 64);
-        assert!(sample_buf.unwrap().capacity() >= 64);
     }
 
-    fn filled_mono_buffer(frames: u64, value: f32) -> AudioBuffer<f32> {
-        let spec = SignalSpec::new_with_layout(16_000, Layout::Mono);
-        let mut buf = AudioBuffer::<f32>::new(frames, spec);
-        buf.render_reserved(Some(frames as usize));
-        for sample in buf.chan_mut(0) {
-            *sample = value;
-        }
+    fn filled_mono_buffer(frames: usize, value: f32) -> AudioBuffer<f32> {
+        let spec = AudioSpec::new(16_000, layouts::CHANNEL_LAYOUT_MONO);
+        let mut buf = AudioBuffer::<f32>::new(spec, frames);
+        buf.resize_with_sample(frames, value);
         buf
     }
 
