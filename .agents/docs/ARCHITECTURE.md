@@ -107,7 +107,7 @@ Empty output is a contract violation.
 
 [`SymphoniaDecoder`](../../src/audio/symphonia.rs) probes the container, selects
 an audio track, decodes packets to interleaved PCM, downmixes to mono, and
-resamples with rubato (including a flush so the tail is not dropped).
+resamples with rubato `Fft::process_all` (chunking and delay trim built in).
 Enabled formats come from Cargo features: MP3, WAV, FLAC, AAC / MP4 / M4A.
 
 [`MAX_AUDIO_DURATION_SECS`](../../src/audio/decoder.rs) (default 2 hours) bounds
@@ -117,7 +117,7 @@ Override via `SymphoniaDecoder::max_duration_secs`.
 Decoder-level bitstream resets may clear local PCM state and continue.
 Format-level resets are rejected as [`Error::UnsupportedBitstreamReset`](../../src/error.rs).
 
-For packet growth, channel resolution, and resample flush details, see
+For packet growth, channel resolution, and resampling details, see
 [symphonia-decode](../skills/symphonia-decode/SKILL.md).
 
 ## Model load and trust

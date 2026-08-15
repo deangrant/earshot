@@ -6,7 +6,7 @@ description: >-
   duration limits.
 trigger: >-
   Symphonia, SampleBuffer, resample, rubato, to_mono, decode_file,
-  ResetRequired, AudioTooLong, channel count, SincFixedIn
+  ResetRequired, AudioTooLong, channel count, Fft, process_all
 ---
 
 # Symphonia decode pipeline
@@ -19,7 +19,7 @@ Prefer small helpers over a monolithic `decode_file`:
 2. Select audio track + copy codec params
 3. Decode packets to interleaved PCM
 4. Downmix to mono
-5. Resample to `WHISPER_SAMPLE_RATE` with flush/trim for resampler delay
+5. Resample to `WHISPER_SAMPLE_RATE` with rubato `Fft::process_all`
 
 ## Correctness
 
@@ -34,8 +34,9 @@ Prefer small helpers over a monolithic `decode_file`:
 ## Resampling
 
 - Identity path when rates match.
-- After `process`, flush remaining delay (`process_partial`) and trim to the
-  expected output length so tails are not dropped.
+- Otherwise use rubato `Fft` with `FixedSync::Both` and `process_all` on a
+  mono `InterleavedSlice` so chunking and startup-delay trim are handled
+  internally.
 
 ## Testing ideas
 

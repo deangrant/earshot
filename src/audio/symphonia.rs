@@ -3,9 +3,8 @@
 use std::fs::File;
 use std::path::Path;
 
-use rubato::{
-    Resampler, SincFixedIn, SincInterpolationParameters, SincInterpolationType, WindowFunction,
-};
+use rubato::audioadapter_buffers::direct::InterleavedSlice;
+use rubato::{Fft, FixedSync, Resampler};
 use symphonia::core::audio::{AudioBufferRef, SampleBuffer};
 use symphonia::core::codecs::{CodecParameters, DecoderOptions, CODEC_TYPE_NULL};
 use symphonia::core::errors::Error as SymphoniaError;
@@ -229,64 +228,24 @@ fn resample_mono(samples: Vec<f32>, from_rate: u32, to_rate: u32) -> Result<Vec<
         return Ok(samples);
     }
 
-    let expected_len =
-        (samples.len() as f64 * f64::from(to_rate) / f64::from(from_rate)).round() as usize;
-    let mut resampler = build_resampler(from_rate, to_rate, samples.len())?;
-    process_and_trim(&mut resampler, samples, expected_len)
-}
-
-/// Builds a fixed-input sinc resampler for a mono buffer of `input_len` samples.
-fn build_resampler(from_rate: u32, to_rate: u32, input_len: usize) -> Result<SincFixedIn<f32>> {
-    let params = SincInterpolationParameters {
-        sinc_len: 256,
-        f_cutoff: 0.95,
-        interpolation: SincInterpolationType::Linear,
-        oversampling_factor: 256,
-        window: WindowFunction::BlackmanHarris2,
-    };
-
-    SincFixedIn::<f32>::new(
-        f64::from(to_rate) / f64::from(from_rate),
-        2.0,
-        params,
-        input_len,
+    let input_len = samples.len();
+    let mut resampler = Fft::<f32>::new(
+        from_rate as usize,
+        to_rate as usize,
+        1024,
         1,
+        FixedSync::Both,
     )
-    .map_err(|e| Error::AudioDecode(format!("resampler init failed: {e}")))
-}
+    .map_err(|e| Error::AudioDecode(format!("resampler init failed: {e}")))?;
 
-/// Processes `samples` through `resampler`, flushes delay, and trims to length.
-fn process_and_trim(
-    resampler: &mut SincFixedIn<f32>,
-    samples: Vec<f32>,
-    expected_len: usize,
-) -> Result<Vec<f32>> {
-    let delay = resampler.output_delay();
-    let waves_in = vec![samples];
-    let mut waves_out = resampler
-        .process(&waves_in, None)
+    let input = InterleavedSlice::new(&samples, 1, input_len)
+        .map_err(|e| Error::AudioDecode(format!("resampler input adapter failed: {e}")))?;
+
+    let output = resampler
+        .process_all(&input, input_len, None)
         .map_err(|e| Error::AudioDecode(format!("resample failed: {e}")))?;
 
-    let mut out = waves_out.pop().unwrap_or_default();
-    let target = expected_len.saturating_add(delay);
-    while out.len() < target {
-        let before = out.len();
-        let flushed = resampler
-            .process_partial::<Vec<f32>>(None, None)
-            .map_err(|e| Error::AudioDecode(format!("resample flush failed: {e}")))?;
-        let chunk = flushed.into_iter().next().unwrap_or_default();
-        if chunk.is_empty() {
-            break;
-        }
-        out.extend_from_slice(&chunk);
-        if out.len() == before {
-            break;
-        }
-    }
-
-    let start = delay.min(out.len());
-    let end = (start + expected_len).min(out.len());
-    Ok(out[start..end].to_vec())
+    Ok(output.take_data())
 }
 
 #[cfg(test)]
